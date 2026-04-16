@@ -129,7 +129,7 @@ Primary-only records contribute 0 or 1. Multi-label records contribute the norma
 
 ## Experiment loop
 
-See `../eu_project_categoriser/program.md` for the full autonomous experiment loop instructions (autoresearch-style).
+See `program.md` for the full autonomous experiment loop instructions (autoresearch-style).
 
 Key points:
 - **Primary files to modify:** `categorization_service.py` (prompts, rules, few-shot examples, post-processing) and `prompts_config.py` (rubric descriptions, technology definitions)
