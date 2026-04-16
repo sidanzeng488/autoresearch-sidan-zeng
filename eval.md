@@ -31,7 +31,9 @@ There are 6 categorizations, executed in a specific pipeline order:
 
 **Pipeline order:** Steps 1→2→3 run sequentially (each step's output filters the next step's candidates). Steps 4, 5, 6 run in parallel after step 3 completes.
 
-**Sector multi-select:** Sector supports primary + secondary values. For combined sewer projects, primary/secondary assignment depends on keyword type (e.g., MW/Mischwasser → Stormwater primary; Reinwasserableitung → Wastewater primary). The Application candidate set is the union of allowed applications from both primary and secondary Sector values.
+**Sector multi-select:** Sector supports primary + secondary values. For combined sewer projects, primary/secondary assignment depends on keyword type (e.g., MW/Mischwasser → Stormwater primary; Reinwasserableitung → Wastewater primary). The Application candidate set is the union of allowed applications from both primary and secondary Sector values. Secondary Sector is only added when the **project itself** (name/description/SOC) references multiple domains — the utility name alone (e.g., "Water and Sewerage Co") does NOT trigger secondary.
+
+**Cross-sector secondary applications:** When a project has both primary and secondary Sectors, the Application rubric includes options from both sectors. This allows the model to output cross-sector secondary Application tags (e.g., primary=Wastewater Networks with secondary=Water Networks for mixed water+sewer connection projects). Validation logic permits secondary Applications belonging to either the primary or secondary Sector.
 
 **Cascading dependency:** If Sector is wrong, Application candidates are wrong, which makes Sub-application wrong. This cascading effect is the primary cause of Sub-application errors.
 
@@ -130,7 +132,8 @@ Primary-only records contribute 0 or 1. Multi-label records contribute the norma
 See `../eu_project_categoriser/program.md` for the full autonomous experiment loop instructions (autoresearch-style).
 
 Key points:
-- **Only file to modify:** `categorization_service.py` (prompts, rules, few-shot examples, post-processing)
+- **Primary files to modify:** `categorization_service.py` (prompts, rules, few-shot examples, post-processing) and `prompts_config.py` (rubric descriptions, technology definitions)
+- **Hierarchy source:** `042026 latest definitions/CATEGORIZATION_Hierarchy 3 (1) (2).xlsx` (rubrics, technology names/descriptions, application-to-technology mappings)
 - **Evaluation script (fixed):** `eval_accuracy.py` — runs the full pipeline and auto-logs results
 - **Results log:** `results.tsv` — auto-appended after each run
 - **Loop:** analyze errors → hypothesize → edit → commit → eval → keep/revert → repeat
@@ -570,22 +573,28 @@ Overall accuracy: **90%+**
 
 1. **LLM non-determinism:** Same code, same data, temperature=0 + seed=42 produces ±2-3% variance across runs. **Mitigation:** disk-based LLM cache (`.llm_cache/`) guarantees 100% deterministic results when cache is preserved. Only clear cache when prompts/model change. Small improvements (<3%) may be noise when cache is cleared.
 2. **Cascading errors:** Application misclassification directly causes Sub-application failure because sub-app candidates are filtered by detected Application.
-3. **Sub-application remains the weakest link:** "General treatment" is over-used as a catch-all. Context-dependent rules help but are fragile.
-4. **Technology accuracy:** "Pipes" assignment is the main challenge — balancing liberal assignment for sewer/network projects vs conservative for treatment plant contexts. Technology extraction now excludes utility-level descriptions to prevent hallucination.
-5. **Multi-lingual input:** Descriptions come in German, Italian, French, Dutch, etc. The model handles this well but occasional mistranslation-driven errors occur.
+3. **Sub-application remains the weakest link:** "General treatment" is over-used as a catch-all. Context-dependent rules help but are fragile. Multi-language SOC field parsing (e.g., Italian "terziario" → Tertiary Treatment) now mitigates some of this.
+4. **Technology accuracy:** "Pipes" assignment is the main challenge — balancing liberal assignment for sewer/network projects vs conservative for treatment plant contexts. Technology extraction now excludes utility-level descriptions to prevent hallucination. New "Biogas processing" technology tag covers BHKW/CHP/Klärgas projects previously missed.
+5. **Multi-lingual input:** Descriptions come in German, Italian, French, Dutch, etc. The model handles this well but occasional mistranslation-driven errors occur. Treatment stage keywords are now explicitly handled in Italian (terziario, secondario, preliminare), French (tertiaire, secondaire), and other languages.
 6. **Field name inconsistency:** Raw data uses `Project Name (PN)` while output uses `project_name`. The `_get_project_name()` helper handles both conventions in post-processing.
 7. **UWWTD theme:** Previously over-applied to ~55% of records. Now tightened to only tag when there is specific UWWTD compliance evidence (new sewer connections, capacity upgrades). Routine maintenance/renovation does not qualify.
 8. **Sector primary/secondary for combined sewer:** Determined by keyword type. MW-Kanal, Mischwasser, MWK, sfioratore, RÜB, Regenbauwerke → `Sector=Stormwater` + `Sector (Secondary)=Wastewater`. Reinwasserableitung, Fremdwassersanierung → `Sector=Wastewater` + `Sector (Secondary)=Stormwater`. Application and Sub-application follow the Sector hierarchy.
 9. **Strict hierarchy compliance (enforced):** Sub-applications must match their parent Application per the hierarchy spreadsheet. Applications without hierarchy-defined sub-apps (Sludge Management, Water Treatment, Desalination) only get universal subs (Planning & Engineering, Construction Budget / Unspecified Construction, Administrative / Support). Technologies (Anaerobic Digestion, Sludge Dewatering, etc.) must NOT appear as Sub-applications.
+10. **Utility name vs project scope:** Multi-domain utility names (e.g., "Water Supply and Sewerage Co") previously caused false secondary Sector/Application tags. Now enforced: secondary tags only come from the project's own name, description, or SOC field — never inferred from the utility name alone.
+11. **Sludge Management scope includes biogas:** BHKW/CHP/Gasdruckerhöhung/Klärgas projects at WWTPs are classified under Sludge Management (not Wastewater Treatment), reflecting that biogas energy is a sludge-derived byproduct. Technology tag: "Biogas processing".
+12. **Network projects ≠ Treatment:** Pure pipe/connection/collection projects must not receive "Wastewater Treatment" as secondary Application. Secondary Application must represent a genuinely different scope present in the project.
 
 ## Levers (what can be changed)
 
 - Prompts and classification rules in `categorization_service.py`
-- Chain-of-Thought instructions
-- Few-shot examples
-- Post-processing rules (hardcoded regex-based overrides per dimension)
-- Model selection (per step or globally)
+- Rubric descriptions and technology definitions in `prompts_config.py` (fallback config; primary source is the Excel hierarchy)
+- Hierarchy definitions in `042026 latest definitions/CATEGORIZATION_Hierarchy 3 (1) (2).xlsx` (primary source for rubrics, technology definitions, and application-to-technology mappings)
+- Chain-of-Thought instructions (per-dimension COT in `_categorize_primary_secondary_batch`)
+- Few-shot examples (per-dimension in `_categorize_primary_secondary_batch`)
+- Post-processing rules (hardcoded regex-based overrides per dimension, e.g., combined sewer suffix detection, Sector↔Application alignment)
+- Model selection (per step or globally, default: `openai/gpt-4.1-mini`)
 - Pipeline structure (e.g., adding verification steps)
-- Batch size and concurrency settings (default batch size: 20 records per API call)
+- Batch size and concurrency settings (default batch size: 20 records per API call, 12 workers)
 - Input field selection via `_slim_project()` (which fields are sent to LLM, with `exclude_utility_description` for Technology; `AI generated description` excluded globally)
 - `_get_project_name()` helper for field name compatibility
+- Cross-sector secondary Application logic (Application rubric merges primary + secondary Sector options)
